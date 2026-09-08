@@ -1,0 +1,72 @@
+{
+  "name": "apt0_rgbd_slam_splits",
+  "source": "/Users/sai/Downloads/apt0",
+  "source_total_frames": 8560,
+  "frames_per_subset": 1000,
+  "num_subsets": 3,
+  "selection": "contiguous windows at start/middle/end for SLAM continuity",
+  "sensor": "StructureSensor",
+  "depth_scale_to_meters": 0.001,
+  "intrinsics": {
+    "color_matrix_3x3": [
+      [
+        582.871,
+        0.0,
+        320.0
+      ],
+      [
+        0.0,
+        582.871,
+        240.0
+      ],
+      [
+        0.0,
+        0.0,
+        1.0
+      ]
+    ],
+    "depth_matrix_3x3": [
+      [
+        583.0,
+        0.0,
+        320.0
+      ],
+      [
+        0.0,
+        583.0,
+        240.0
+      ],
+      [
+        0.0,
+        0.0,
+        1.0
+      ]
+    ]
+  },
+  "subsets": [
+    {
+      "subset": "apt0_seq0",
+      "source_start": 0,
+      "source_end_exclusive": 1000,
+      "num_frames": 1000,
+      "num_errors": 0,
+      "dataset_json": "apt0_seq0/dataset.json"
+    },
+    {
+      "subset": "apt0_seq1",
+      "source_start": 3780,
+      "source_end_exclusive": 4780,
+      "num_frames": 1000,
+      "num_errors": 0,
+      "dataset_json": "apt0_seq1/dataset.json"
+    },
+    {
+      "subset": "apt0_seq2",
+      "source_start": 7560,
+      "source_end_exclusive": 8560,
+      "num_frames": 1000,
+      "num_errors": 0,
+      "dataset_json": "apt0_seq2/dataset.json"
+    }
+  ]
+}

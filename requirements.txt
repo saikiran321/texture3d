@@ -1,0 +1,6 @@
+# open3d 0.18 is built against the numpy 1.x ABI; numpy 2.x segfaults in TSDF integrate.
+numpy>=1.24,<2
+opencv-python==4.10.0.84
+open3d>=0.18,<0.19
+scipy>=1.10
+# Texturing lives in the installable texture3d package: pip install -e .
