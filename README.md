@@ -8,7 +8,9 @@ Texture an aligned triangle mesh from posed RGB-D frames — one photograph per 
 
 Not on PyPI yet. Install from this repo. The texturing library is trimesh-based and does not depend on Open3D; reconstruction (optional, same repo) does.
 
-<!-- TODO: add a hero render (photo | textured mesh) once a small committed preview image exists -->
+![A grey untextured scan of a room, plus three posed photographs of the same room, equals the scan rendered with the photographs applied as a texture](docs/figures/purpose.png)
+
+*A scanner gives you geometry; a camera gives you posed photos. `texture3d` puts each photo onto the faces it sees best, levels the seams, and packs one atlas. `apt0_seq0`: 977k faces, 1000 frames, 58 keyframes, ~2 min on a laptop.*
 
 ## Quick start
 
@@ -50,6 +52,10 @@ You need a triangle mesh in the same world frame as the camera poses, plus RGB-D
 ## Why
 
 Averaging every view onto a texel blurs photograph detail as soon as poses or geometry are off by a few millimetres. **texture3d** assigns each face one keyframe (the view that sees it best), cuts connected same-view faces out as patches, then hides the seams with a global colour-offset solve and a local Poisson blend. The result is a single-material textured mesh (OBJ or GLB). Input UVs are ignored; output UVs follow the labelling, with vertices split along patch borders.
+
+![Three views of the same stairs: the photograph, the reconstruction's per-vertex colour averaged over all frames, and the texture3d result; zoomed crops show the averaged version is blurred while texture3d keeps the carpet weave and shoe detail](docs/figures/why.png)
+
+*Left: a captured frame. Middle: the TSDF reconstruction's per-vertex colour, i.e. every frame averaged — the carpet weave and the shoes smear. Right: `texture3d`, one photograph per face. Bottom row is the boxed region at native resolution.*
 
 This repo also ships an Open3D TSDF reconstruction pipeline for turning a `dataset.json` sequence into `mesh.ply`. You can texture that mesh, or an untextured STL/OBJ from another engine, as long as it is aligned to the same poses.
 
@@ -224,7 +230,24 @@ flowchart LR
 6. **Leveling** — global Tikhonov-regularised offsets (λ = 0.1), then a 20 px Poisson strip.
 7. **Atlas** — pack, copy levelled pixels, write per-corner UVs, optional sharpen.
 
+![Four panels: the per-face keyframe label map, the raw bake with visible seams, the levelled bake, and the top-left corner of the packed atlas where the largest patches (stairs, wall, door) land; a zoomed strip shows the wall mottling disappearing after leveling](docs/figures/how.png)
+
+*Stages 4–7 on one view of `apt0_seq0`. Column 4 is the atlas itself: patches are packed largest-first, so the top-left corner holds whole surfaces (stairs, picture wall, door) at full resolution; the long tail of small patches fills the rows below. 48 % of the 4096² atlas is used.*
+
 Faces no camera sees stay the empty colour (typical TSDF back shell). `result.stats["stage_seconds"]` times each stage.
+
+To check a bake visually, render the textured mesh back from dataset poses and compare with the photos:
+
+![Posed RGB-D frames and camera trajectory go in; the mesh textured by texture3d is rendered back from the same poses](docs/figures/pipeline.png)
+
+```bash
+# input/output check above
+.venv/bin/python tools/make_readme_figure.py assets/datasets/apt0_seq0 textured/apt0_seq0 \
+  --frames 100,350,600,850 --out docs/figures/pipeline.png
+# purpose / why / how figures used in this README
+.venv/bin/python tools/make_story_figures.py assets/datasets/apt0_seq0 \
+  assets/reconstructions/apt0_seq0/mesh.ply textured/apt0_seq0 --out docs/figures
+```
 
 Package layout: `src/texture3d/` is the installable library (`bake`, `camera`, `io`, `mapping/`). `rgbd_recon/` is reconstruction only.
 
