@@ -1,171 +1,316 @@
-# 3D Texturing — RGBD Reconstruction + Texturing
+# texture3d
 
-RGBD reconstruction (Open3D TSDF fusion + OpenCV preprocessing) and mesh
-texturing over continuous frame subsets extracted from the BundleFusion
-`apt0` sequence.
+Texture an aligned triangle mesh from posed RGB-D frames — one photograph per face, seams levelled, one atlas out.
 
-## Data
+[![Python 3.9+](https://img.shields.io/badge/python-3.9%2B-blue.svg)](#installation)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](#license)
+[![Version 0.2.0](https://img.shields.io/badge/version-0.2.0-informational.svg)](https://github.com/saikiran321/texture3d)
 
-Three continuous 1000-frame subsets created by `create_rgbd_dataset.py`:
+Not on PyPI yet. Install from this repo. The texturing library is trimesh-based and does not depend on Open3D; reconstruction (optional, same repo) does.
 
-| Subset | Source frames |
-|---|---|
-| `apt0_seq0` | 0–999 |
-| `apt0_seq1` | 3780–4779 |
-| `apt0_seq2` | 7560–8559 |
+<!-- TODO: add a hero render (photo | textured mesh) once a small committed preview image exists -->
 
-Each frame folder holds `rgb.jpg`, `depth.png` (uint16 mm), `pose.txt`
-(4x4 camera-to-world), `meta.json`. Subset root has shared `intrinsics.txt`
-and a `dataset.json` index.
-
-## Setup
+## Quick start
 
 ```bash
 python3 -m venv .venv
-.venv/bin/pip install -r requirements.txt  # reconstruction deps (open3d etc.)
-.venv/bin/pip install -e .                 # the texture3d texturing library + CLI
+.venv/bin/pip install -e ".[dev]"
 ```
-
-## Run
-
-```bash
-# Full reconstruction of one subset
-.venv/bin/python run_reconstruction.py apt0_seq0
-
-# All subsets, faster preview
-.venv/bin/python run_reconstruction.py apt0_seq0 apt0_seq1 apt0_seq2 --stride 3 --voxel 0.02
-```
-
-Outputs land in `reconstructions/<subset>/`:
-
-- `mesh.ply` — colored TSDF mesh (cleaned, normals computed)
-- `point_cloud.ply` — downsampled point cloud
-- `trajectory_tum.txt` — camera trajectory (TUM format)
-- `config.json`, `summary.json` — run parameters and stats
-
-## Texturing — the `texture3d` library
-
-Installable library (`pip install -e .`) that maps posed RGB-D frames onto any
-aligned triangle mesh — ours, or an untextured STL/OBJ from another
-reconstruction engine. Built on **trimesh** (stable vertex/face ordering,
-`process=False` everywhere); Open3D is not used by the library.
-
-Each face is textured from a single keyframe — the view that sees it best —
-so photograph detail is kept instead of being averaged away by slightly
-misregistered frames. Connected same-view faces become patches; a global
-colour-offset solve and a local Poisson blend hide the seams, then the
-patches are packed into one atlas (`src/texture3d/mapping/`).
 
 ```python
 import texture3d
 
-frames = texture3d.load_dataset("apt0_seq0")     # or build RGBDFrame objects
-result = texture3d.bake("reconstructions/apt0_seq0/mesh.ply", frames)
-result.export("textured/apt0_seq0/textured_mesh.obj")   # or .glb
-print(result.stats)                              # patches, coverage, stage timings
+frames = texture3d.load_dataset("path/to/dataset")  # directory with dataset.json
+result = texture3d.bake("mesh.ply", frames)
+result.export("textured_mesh.obj")  # or .glb
+print(result.stats)
 ```
 
 ```bash
-# Same thing from the CLI
-.venv/bin/texture3d apt0_seq0 --mesh reconstructions/apt0_seq0/mesh.ply
-
-# Larger patches, no sharpening, wider blend strip
-.venv/bin/texture3d apt0_seq0 --data-ratio 0.05 --sharpness 0 --strip-width 30
+.venv/bin/texture3d path/to/dataset --mesh mesh.ply --out textured/run
 ```
 
-Any UVs the input mesh carries are ignored: the mapping's UVs follow the
-labelling. The output mesh splits vertices along patch borders (a vertex has
-one UV per patch it belongs to) and is a plain single-material textured mesh,
-exportable to OBJ or GLB.
+You need a triangle mesh in the same world frame as the camera poses, plus RGB-D frames. See [Dataset layout](#dataset-layout). Without a `dataset.json` folder, build `RGBDFrame` objects yourself ([Usage](#usage)).
 
-### Stages (`src/texture3d/mapping/`)
+## Table of contents
 
-0. **Keyframes** (`keyframes.py`) — the least blurry frame of every `--gap`
-   window (Crete no-reference blur metric), skipping near-duplicate poses
-   (<5 cm / <0.09 rad).
-1. **Topology** (`topology.py`) — incident faces, face adjacency across
-   edges, and face normals smoothed over three passes with neighbours within
-   25°.
-2. **View scoring** (`scoring.py`) — per keyframe the mesh is rasterised into a
-   face map with a depth test (perspective-correct barycentrics, 3 px image
-   border), so a pixel belongs to the nearest face and the mesh's own back
-   side never textures anything. A face's quality in a view is the blurred
-   Sobel gradient magnitude summed over its pixels times the squared cosine
-   to the smoothed normal. Views whose mean face colour (YCbCr) falls below a
-   Gaussian likelihood of 0.06 against the others are dropped for that face.
-3. **Labelling** (`labeling.py`) — the face graph is an MRF whose labels are
-   the views plus "none"; data cost `(1 - quality / q95) · 100`, Potts
-   smoothness 1000, solved by synchronous loopy belief propagation.
-4. **Patches** (`patches.py`) — connected same-view faces become patches with
-   a 2 px bordered rectangle in their view; seam vertices catalogue where
-   patches meet.
-5. **Seam leveling** (`leveling.py`) — *global*: one colour offset per
-   (vertex, patch) from a Tikhonov-regularised least-squares solve (λ = 0.1,
-   conjugate gradient) so both sides of every seam agree, interpolated over
-   each patch and added in YCbCr; *local*: a 20 px strip along each patch
-   border is Poisson-blended so the border takes the mean of both sides while
-   the interior keeps the photograph's gradients.
-6. **Atlas** (`atlas.py`) — MaxRects bottom-left packing with rotation into
-   the smallest power-of-two square (≤ 8192), the levelled pixels copied in,
-   per-corner texture coordinates written, and an unsharp mask (σ 1.5,
-   weight 0.5) applied.
+- [Why](#why)
+- [Features](#features)
+- [Installation](#installation)
+- [Usage](#usage)
+- [CLI](#cli)
+- [Configuration](#configuration)
+- [How it works](#how-it-works)
+- [RGB-D reconstruction](#rgb-d-reconstruction)
+- [Dataset layout](#dataset-layout)
+- [Testing](#testing)
+- [Limitations](#limitations)
+- [License](#license)
 
-Faces no keyframe sees take the empty colour (white by default); on a TSDF
-mesh that is the back-side shell from the truncation band, which no camera
-ever saw. `result.stats["stage_seconds"]` reports each stage's time.
+## Why
 
-Two options, both on by default:
+Averaging every view onto a texel blurs photograph detail as soon as poses or geometry are off by a few millimetres. **texture3d** assigns each face one keyframe (the view that sees it best), cuts connected same-view faces out as patches, then hides the seams with a global colour-offset solve and a local Poisson blend. The result is a single-material textured mesh (OBJ or GLB). Input UVs are ignored; output UVs follow the labelling, with vertices split along patch borders.
 
-- **Unseen-face fill** (`--no-fill-unseen`): a face smaller than a pixel in
-  every keyframe is never rasterised. It takes the view of a textured edge
-  neighbour when its vertices project inside that view (on apt0_seq0, 157k of
-  977k faces), instead of speckling the surface with the empty colour.
-- **Shelf packing above 4,000 patches** (`exact_packing_limit`): MaxRects is
-  quadratic in the patch count; a dense mesh seen by many views yields tens
-  of thousands of one-face patches (apt0_seq0: 94k patches, 640 s to pack).
-  Beyond the limit a next-fit decreasing-height shelf packer runs instead
-  (1 s), at the cost of a looser atlas.
+This repo also ships an Open3D TSDF reconstruction pipeline for turning a `dataset.json` sequence into `mesh.ply`. You can texture that mesh, or an untextured STL/OBJ from another engine, as long as it is aligned to the same poses.
 
-Measured on `apt0_seq0` (977k faces, 58 keyframes at 640x480, 18-core Mac):
-scoring 8 s, labelling 9 s (53 sweeps), global leveling 14 s, local leveling
-78 s, atlas 1 s; 117 s end to end, 4.4 GB peak, 85% of faces textured (the
-rest is the TSDF back shell) in 60k patches.
+**Status:** 0.2.0 — end-to-end usable, public API may still change.
 
-## Code layout
+## Features
 
-```
-rgbd_recon/
-  config.py         # dataclass configs (depth filter, fusion, mesh, pipeline)
-  dataset.py        # RGBDSequence/Frame loaders for the dataset.json layout
-  preprocessing.py  # OpenCV depth cleanup (range clip, bilateral, edge mask)
-  fusion.py         # ScalableTSDFVolume wrapper
-  pipeline.py       # end-to-end orchestration + mesh postprocess + exports
-src/texture3d/        # installable texturing library (trimesh-based)
-  camera.py         # PinholeCamera + RGBDFrame (dataset-agnostic inputs)
-  io.py             # load_dataset() for the dataset.json layout
-  config.py         # BakeConfig (keyframes + mapping)
-  blur.py           # Crete blur metric
-  keyframes.py      # least-blurry-per-window keyframes
-  mapping/          # one-keyframe-per-face mapping + seam leveling
-    types.py        #   Mesh/Camera/View/Result, colour helpers, conventions
-    topology.py     #   incidence, adjacency, smoothed normals
-    imageops.py     #   gradient image, invalid-region mask, bilinear sampling, sharpen
-    raster.py       #   barycentric / fixed-point triangle rasterisers, Bresenham lines
-    scoring.py      #   depth-tested face maps, per-face view quality, outlier test
-    labeling.py     #   MRF + loopy belief propagation, unseen-face fill
-    patches.py      #   patches, seam vertices, contained-patch merge
-    leveling.py     #   global (least squares) and local (Poisson) seam leveling
-    atlas.py        #   MaxRects / shelf packing, atlas assembly
-    mapper.py       #   run(): the stages in order, with timings
-  bake.py           # bake(): keyframes -> views -> mapping -> textured trimesh
-  cli.py            # `texture3d` console command
-tests/              # unit tests + a synthetic end-to-end bake (pytest)
-run_reconstruction.py  # CLI
-run_texturing.py       # back-compat shim for the texture3d CLI
+- **One keyframe per face** — sharpness-weighted view scoring, outlier rejection on mean face colour, MRF labelling with Potts smoothness
+- **Seam leveling** — global least-squares offsets in YCbCr, then a Poisson blend along a configurable border strip
+- **Single atlas** — MaxRects packing (shelf packer above 4,000 patches), optional unsharp mask
+- **Unseen-face fill** — sub-pixel faces inherit a neighbour's view instead of speckling the empty colour
+- **Dataset-agnostic inputs** — `RGBDFrame` + `PinholeCamera`, or `load_dataset()` for the `dataset.json` layout
+- **OBJ and GLB export** via trimesh; `result.stats` reports coverage and per-stage timings
+
+## Installation
+
+**Prerequisites:** Python 3.9 or newer. Texturing needs NumPy, SciPy, OpenCV, trimesh, and Pillow (pulled in by the package). Reconstruction additionally needs Open3D 0.18 and NumPy 1.x (`requirements.txt`).
+
+### Texturing library + CLI
+
+```bash
+git clone https://github.com/saikiran321/texture3d.git
+cd texture3d
+python3 -m venv .venv
+.venv/bin/pip install -e .
 ```
 
-The dataset loader is format-agnostic beyond `dataset.json`, so future
-sequences exported by `create_rgbd_dataset.py` work unchanged. Fusion,
-preprocessing, mesh postprocessing, and all texturing stages are independently
-configurable for reuse (e.g. estimated SLAM poses instead of ground truth, or
-texturing a mesh produced by a different engine).
+Dev extras (pytest, ruff):
+
+```bash
+.venv/bin/pip install -e ".[dev]"
+```
+
+### Reconstruction extras
+
+```bash
+.venv/bin/pip install -r requirements.txt
+```
+
+Open3D 0.18 is built against the NumPy 1.x ABI. Keep `numpy>=1.24,<2` in that environment; NumPy 2.x can segfault during TSDF integrate.
+
+<!-- TODO: add a PyPI one-liner when the package is published -->
+
+## Usage
+
+### From a `dataset.json` directory
+
+```python
+import texture3d
+
+frames = texture3d.load_dataset("assets/datasets/apt0_seq0")
+result = texture3d.bake(
+    "assets/reconstructions/apt0_seq0/mesh.ply",
+    frames,
+)
+result.export("textured/apt0_seq0/textured_mesh.obj")
+print(result.stats["textured_fraction"], result.stats["stage_seconds"])
+```
+
+`BakeResult` has `.mesh` (textured `trimesh.Trimesh`), `.texture` (uint8 RGB atlas), and `.stats`.
+
+### From frames you already have in memory
+
+```python
+import numpy as np
+import texture3d
+from texture3d import BakeConfig, PinholeCamera, RGBDFrame
+
+camera = PinholeCamera(width=640, height=480, fx=582.871, fy=582.871, cx=320.0, cy=240.0)
+pose_c2w = np.eye(4)  # camera-to-world, OpenCV convention (+z forward, +y down)
+rgb = ...             # HxWx3 uint8, RGB
+depth_m = ...         # HxW float32 meters, 0 = invalid
+
+frames = [
+    RGBDFrame(pose_c2w=pose_c2w, camera=camera, rgb=rgb, depth=depth_m, depth_scale=1.0),
+]
+cfg = BakeConfig()
+cfg.keyframes.rgbd_frame_gap = 1
+result = texture3d.bake("mesh.ply", frames, cfg)
+result.export("textured_mesh.glb")
+```
+
+Poses are 4×4 **camera-to-world**. Integer depth images (and integer files) are multiplied by `depth_scale` (default `1e-3` for millimetre PNGs). Float arrays are treated as metres already.
+
+### Tuning
+
+```python
+from texture3d import BakeConfig
+
+cfg = BakeConfig()
+cfg.keyframes.rgbd_frame_gap = 5          # 1 keyframe per N frames
+cfg.mapping.data_smoothness_ratio = 0.05  # lower → larger patches
+cfg.mapping.sharpness_weight = 0.0        # disable unsharp mask
+cfg.mapping.local_leveling_strip_width = 30
+cfg.mapping.fill_unseen = True
+```
+
+## CLI
+
+```
+texture3d DATASET_DIR --mesh mesh.ply [--out DIR] [--format obj|glb]
+```
+
+| Flag | Default | Meaning |
+| --- | --- | --- |
+| `--mesh` | `reconstructions/<dataset-name>/mesh.ply` | Mesh to texture (`.ply` / `.obj` / `.stl`) |
+| `--out` | `textured/<dataset-name>` | Output directory |
+| `--format` | `obj` | `obj` or `glb` |
+| `--gap` | `5` | One keyframe per N frames (`1` = all) |
+| `--outlier` | `0.06` | Drop views below this colour likelihood (`0` = off) |
+| `--data-ratio` | `0.1` | Data cost vs smoothness; lower = larger patches |
+| `--no-global-leveling` | off | Skip the global colour-offset solve |
+| `--no-local-leveling` | off | Skip the Poisson border blend |
+| `--strip-width` | `20` | Local leveling strip width in pixels |
+| `--sharpness` | `0.5` | Unsharp-mask weight (`0` = off) |
+| `--max-texture` | `8192` | Largest atlas edge in pixels |
+| `--no-fill-unseen` | off | Leave sub-pixel faces in the empty colour |
+
+Writes `textured_mesh.<format>`, `config.json`, and `summary.json`. If the default mesh path does not exist, pass `--mesh` explicitly.
+
+```bash
+.venv/bin/texture3d assets/datasets/apt0_seq0 \
+  --mesh assets/reconstructions/apt0_seq0/mesh.ply \
+  --out textured/apt0_seq0
+```
+
+On a 977k-face mesh with 58 keyframes (640×480, 18-core Mac) this run was about **120 s** (scoring 8 s, labelling 9 s, global leveling 15 s, local leveling 82 s, atlas 1 s), **85%** of faces textured (the rest is the TSDF back shell no camera saw), 4096 atlas.
+
+`run_texturing.py` is a thin shim around the same CLI.
+
+## Configuration
+
+`BakeConfig` / `KeyframeConfig` / `MappingConfig` (`texture3d.config`):
+
+| Name | Type | Default | Description |
+| --- | --- | --- | --- |
+| `keyframes.rgbd_frame_gap` | int | `5` | Least-blurry frame in every window of this many frames |
+| `keyframes.closest_pose_translation` | float | `0.05` | Skip a candidate within this many metres of the last keyframe |
+| `keyframes.closest_pose_rotation_angle` | float | `0.09` | Same, for relative rotation (radians) |
+| `mapping.outlier_threshold` | float | `0.06` | Gaussian colour likelihood; `0` disables |
+| `mapping.data_smoothness_ratio` | float | `0.1` | Data cost scale vs Potts smoothness |
+| `mapping.global_seam_leveling` | bool | `True` | Least-squares colour offsets per (vertex, patch) |
+| `mapping.local_seam_leveling` | bool | `True` | Poisson blend along patch borders |
+| `mapping.local_leveling_strip_width` | int | `20` | Blend strip width in pixels |
+| `mapping.sharpness_weight` | float | `0.5` | Unsharp mask; `0` disables |
+| `mapping.max_texture_size` | int | `8192` | Max atlas edge (power of two) |
+| `mapping.empty_color` | RGB tuple | `(255, 255, 255)` | Texels no patch covers |
+| `mapping.scoring_workers` | int | `4` | Views scored in parallel |
+| `mapping.fill_unseen` | bool | `True` | Neighbour view for sub-pixel faces |
+| `mapping.exact_packing_limit` | int | `4000` | MaxRects up to this many patches; shelf packer beyond. `0` = always MaxRects |
+
+## How it works
+
+```mermaid
+flowchart LR
+  frames[RGB-D frames] --> kf[Keyframes]
+  mesh[Triangle mesh] --> topo[Topology]
+  kf --> score[Score views]
+  topo --> score
+  score --> label[Label faces]
+  label --> patches[Patches + seams]
+  patches --> level[Seam leveling]
+  level --> atlas[Pack atlas]
+  atlas --> out[Textured mesh]
+```
+
+1. **Keyframes** — least blurry frame in each `--gap` window (Crete metric); near-duplicate poses are skipped.
+2. **Topology** — incidence, edge adjacency, face normals smoothed over neighbours within 25°.
+3. **Scoring** — depth-tested face maps; quality is blurred Sobel magnitude times squared cosine to the normal. Colour outliers are dropped.
+4. **Labelling** — MRF over the face graph (views + “none”), loopy belief propagation.
+5. **Patches** — connected same-view faces, 2 px border in that view; seam vertices where patches meet.
+6. **Leveling** — global Tikhonov-regularised offsets (λ = 0.1), then a 20 px Poisson strip.
+7. **Atlas** — pack, copy levelled pixels, write per-corner UVs, optional sharpen.
+
+Faces no camera sees stay the empty colour (typical TSDF back shell). `result.stats["stage_seconds"]` times each stage.
+
+Package layout: `src/texture3d/` is the installable library (`bake`, `camera`, `io`, `mapping/`). `rgbd_recon/` is reconstruction only.
+
+## RGB-D reconstruction
+
+Optional. Fuses a `dataset.json` sequence with Open3D TSDF (OpenCV depth cleanup first).
+
+```bash
+.venv/bin/pip install -r requirements.txt
+.venv/bin/python run_reconstruction.py assets/datasets/apt0_seq0
+.venv/bin/python run_reconstruction.py assets/datasets/apt0_seq0 --stride 3 --voxel 0.02
+```
+
+Writes to `reconstructions/<name>/` by default: `mesh.ply`, `point_cloud.ply`, `trajectory_tum.txt`, `config.json`, `summary.json`.
+
+`create_rgbd_dataset.py` cuts contiguous windows from a BundleFusion-style capture into that layout. Three `apt0` windows used while developing:
+
+| Subset | Source frames |
+| --- | --- |
+| `apt0_seq0` | 0–999 |
+| `apt0_seq1` | 3780–4779 |
+| `apt0_seq2` | 7560–8559 |
+
+Those sequences are not in the git tree (`assets/` is gitignored). Point `--output-root` / dataset paths at your own copy.
+
+## Dataset layout
+
+`texture3d.load_dataset(dir)` expects `dir/dataset.json`:
+
+```json
+{
+  "image_size": {"width": 640, "height": 480},
+  "intrinsics": {
+    "color_matrix_3x3": [[fx, 0, cx], [0, fy, cy], [0, 0, 1]],
+    "depth_matrix_3x3": null
+  },
+  "depth": {"scale_to_meters": 0.001},
+  "frames": [
+    {"frame_id": "000000", "rgb": "000000/rgb.jpg", "depth": "000000/depth.png", "pose": "000000/pose.txt"}
+  ]
+}
+```
+
+Paths are relative to the dataset directory. `pose.txt` is a 4×4 camera-to-world matrix. Depth PNGs are typically uint16 millimetres.
+
+## Testing
+
+```bash
+.venv/bin/pip install -e ".[dev]"
+.venv/bin/python -m pytest -q
+```
+
+15 tests: rasterisers, labelling, atlas packing, seam-leveling helpers, and a synthetic checker-plane bake. No GPU required.
+
+```bash
+.venv/bin/ruff check src tests
+```
+
+## Limitations
+
+- Mesh and cameras must already share a world frame. This library does not estimate poses or reconstruct geometry (use `rgbd_recon` or another engine).
+- Input UVs are discarded.
+- Unseen faces (back of a TSDF shell, or never projected) stay `empty_color` unless `fill_unseen` can borrow a neighbour.
+- Not published to PyPI; install from git.
+- Measured timings are from one Mac; local leveling dominates on dense meshes.
+
+## Contributing
+
+Issues and PRs are welcome.
+
+```bash
+git clone https://github.com/saikiran321/texture3d.git
+cd texture3d
+python3 -m venv .venv
+.venv/bin/pip install -e ".[dev]"
+.venv/bin/python -m pytest -q
+```
+
+<!-- TODO: add CONTRIBUTING.md / CODE_OF_CONDUCT.md if you want a formal process -->
+
+## License
+
+MIT — see `pyproject.toml`.
+
+<!-- TODO: add a LICENSE file at the repo root so GitHub detects the license automatically -->
+
+—
+
+[Sai Kiran](https://github.com/saikiran321)
